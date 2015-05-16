@@ -4,7 +4,11 @@
 #include <string.h>
 #include "utility/debug.h"
 
-#define UNO
+
+#include <avr/io.h>
+#include <avr/interrupt.h>
+
+#undef UNO
 
 #define	LOG_DATA
 
@@ -45,10 +49,12 @@ Adafruit_CC3000_Client udpClient;
 #define SERIAL_CONVERT
 #define MUX_TELEOP         0
 #define MUX_AUTONOMOUS     1
-#define PB7            11    // MUX select pin
-#define PD4            4     // Autonomous mode LED
-#define PD6            12    // Manual mode LED
-#define PC6            5     // WLAN LED
+#define MUX_LED            11    // MUX select pin
+#define AUTONOMOUS_LED     4     // Autonomous mode LED
+#define MANUAL_LED         12    // Manual mode LED
+#define SAFE_LED           PE2
+#define WLAN_LED           5     // WLAN LED
+#define DHCP_LED           13
 
 #define SAFE_MODE       0
 #define AUTONOMOUS_MODE       1
@@ -68,6 +74,11 @@ Adafruit_CC3000_Client udpClient;
 #endif
 
 static volatile uint8_t currentMode;
+static volatile uint8_t g_newMode;
+bool dhcp = false;
+uint8_t packets = 0;
+unsigned long timeLastReceivedPacket = millis();
+#define PACKET_TIME_LIMIT 500  // time limit since last packet for LED blinking in millis
 
 int lastActuatorVal = 0;
 // constants multiplied by value from panel udp socket
@@ -95,6 +106,39 @@ int lastActuatorVal = 0;
     
 void setup()
 {
+        pinMode(SAFE_LED, OUTPUT);
+        pinMode(DHCP_LED, OUTPUT);
+        pinMode(MANUAL_LED, OUTPUT);
+        pinMode(AUTONOMOUS_LED, OUTPUT);
+        pinMode(WLAN_LED, OUTPUT);
+//        digitalWrite(SAFE_LED, HIGH);
+        DDRE |= (1 << DDE2);		// DDRE2 set outbound for Safe Mode LED
+//        PORTE |= (1 << PORTE2);					// Safe Mode LED on
+        
+        
+        // initialize timer for dhcp_led timer (simulates Rx)
+        // initialize Timer1
+        cli();          // disable global interrupts
+        TCCR1A = 0;     // set entire TCCR1A register to 0
+        TCCR1B = 0;     // same for TCCR1B
+     
+        // set compare match register to desired timer count:
+        OCR1A = 15624 / 10;  // 100 ms
+        // turn on CTC mode:
+        TCCR1B |= (1 << WGM12);
+        // Set CS10 and CS12 bits for 1024 prescaler:
+        TCCR1B |= (1 << CS10);
+        TCCR1B |= (1 << CS12);
+        // enable timer compare interrupt:
+        TIMSK1 |= (1 << OCIE1A);
+        sei();          // enable global interrupts
+        
+        // first set it into safe mode
+        currentMode = MANUAL_MODE;  // set this variable to not SAFE just until we call ModeSet()
+        ModeSet(SAFE_MODE);
+        currentMode = SAFE_MODE;
+        
+        
 	Serial.begin(115200);
     // Check that cc3000.begin() returns true
 	while (!cc3000.begin())
@@ -140,6 +184,7 @@ void setup()
 		Reboot("Connecting to AP - Failed", 1);
 		return;
 	}
+    digitalWrite(WLAN_LED, HIGH);
    
 	Serial.println(F("OK"));
   
@@ -154,6 +199,8 @@ void setup()
 		if(cc3000.checkDHCP())
 		{
 			Serial.println(F("OK"));
+                        digitalWrite(DHCP_LED, HIGH);
+                        dhcp = true;
 			break;
 		}
 		else
@@ -162,6 +209,7 @@ void setup()
 				Reboot("FAILED - Rebooting!!!", 2);
 			
 			Serial.println(retry+1);
+                        dhcp = false;
 		}
 		
 		++retry;
@@ -182,11 +230,11 @@ void setup()
 void loop()
 {
 //              Serial.println("entered main loop...");
-		if(!udpClient.connected())
-                {
-			Reboot("Lost connection in main loop", 10);
-                    Serial.println("Lost udp connection!");
-                }
+//		if(!udpClient.connected())
+//                {
+//			Reboot("Lost connection in main loop", 10);
+//                    Serial.println("Lost udp connection!");
+//                }
 		
 		if( udpClient.available() )
 		{
@@ -201,9 +249,9 @@ void loop()
             int8_t left        = 0;
             int8_t right       = 0;
             
-            uint8_t mode = currentMode;
+            uint8_t mode;
             parseCommand(command, &actuator, &dig, &mode, &left, &right);
-            currentMode = mode;  // workaround because currentMode is volatile
+            g_newMode = mode;  // workaround because currentMode is volatile
             
             // for debugging
             Serial.print("command bytes received: "); 
@@ -263,10 +311,13 @@ void loop()
 
             
             // switch modes, check if we fail
-            if(!ModeSet(currentMode))
+            if(!ModeSet(g_newMode))
             {
                 // TODO PRINT OUT ERROR
                 Serial.print("Cannot change mode to "); Serial.println(currentMode);
+            } else
+            {
+                currentMode = g_newMode;
             }
 
             
@@ -283,10 +334,30 @@ void loop()
                 Serial.print("Not transmitting CAN command because we are in mode: ");
                 Serial.println(currentMode);
             }
+        
+//            if(packets % 4 == 0) 
+//            {
+//                digitalWrite(DHCP_LED, HIGH-digitalRead(DHCP_LED));
+//            }
             
+            
+            packets++;  // increment number of packets
+            timeLastReceivedPacket = millis();
+        // else if there's no data from UDP socket
         }
 
-		delay(100);
+//		delay(100);
+}
+
+ISR(TIMER1_COMPA_vect)
+{
+    if(millis() - timeLastReceivedPacket < PACKET_TIME_LIMIT)
+    {
+        digitalWrite(DHCP_LED, !digitalRead(DHCP_LED));
+    } else
+    {
+      digitalWrite(DHCP_LED, dhcp);
+    }
 }
 
 uint16_t checkFirmwareVersion(void)
@@ -336,9 +407,9 @@ void Reboot(const char* errMsg, uint32_t errCode)
 	//cc3000.reboot();
         for(int x = 0; x < errCode; x++);
         {
-          digitalWrite(PC6, HIGH);
+          digitalWrite(WLAN_LED, HIGH);
           delay(300);
-          digitalWrite(PC6, LOW);
+          digitalWrite(WLAN_LED, LOW);
           delay(300);
         }
 }
@@ -454,10 +525,10 @@ void MuxSelect(uint8_t selection)
   switch (selection)
   {
     case MUX_TELEOP:
-        digitalWrite(PB7, LOW);     //Set MUX Select low to allow Atmega TX line to go through MUX
+        digitalWrite(MUX_LED, LOW);     //Set MUX Select low to allow Atmega TX line to go through MUX
         break;
     case MUX_AUTONOMOUS:
-        digitalWrite(PB7, HIGH);    // Set MUX Select high to allow FTDI to go through MUX
+        digitalWrite(MUX_LED, HIGH);    // Set MUX Select high to allow FTDI to go through MUX
         break;
   }
 }
@@ -475,6 +546,10 @@ uint8_t ModeSet(uint8_t newMode)
                 delay(SAFE_DELAY);
                 MuxSelect(MUX_TELEOP);	
                 currentMode = SAFE_MODE;
+//                digitalWrite(SAFE_LED, HIGH);
+		PORTE |= (1 << PORTE2);					// Safe Mode LED on
+                digitalWrite(AUTONOMOUS_LED, LOW);
+                digitalWrite(MANUAL_LED, LOW);
                 delay(500);
                 break;
 
@@ -485,7 +560,9 @@ uint8_t ModeSet(uint8_t newMode)
                 delay(SAFE_DELAY);
                 MuxSelect(MUX_AUTONOMOUS);
                 USART_Transmit (RESUME_COMMAND, 35);  // re-activate motor controllers
-                digitalWrite(PD4, HIGH);    	        // Autonomous Mode LED on
+                digitalWrite(AUTONOMOUS_LED, HIGH);    	        // Autonomous Mode LED on
+		PORTE &= ~(1 << PORTE2);					// Safe Mode LED off
+                digitalWrite(MANUAL_LED, LOW);
                 delay(500);  // TODO why do we need this delay? we don't want this to let the udp buffer fill up?
                 currentMode = AUTONOMOUS_MODE;
                 break;
@@ -495,7 +572,9 @@ uint8_t ModeSet(uint8_t newMode)
                 delay(SAFE_DELAY);
                 MuxSelect(MUX_TELEOP);
                 USART_Transmit (RESUME_COMMAND, 35);  // re-activate motor controllers
-                digitalWrite(PD6, HIGH);		// Manual Mode LED on
+                digitalWrite(MANUAL_LED, HIGH);		// Manual Mode LED on
+                digitalWrite(AUTONOMOUS_LED, LOW);    	        // Autonomous Mode LED off
+		PORTE &= ~(1 << PORTE2);					// Safe Mode LED off
                 delay(500);
                 currentMode = MANUAL_MODE;
                 break;
