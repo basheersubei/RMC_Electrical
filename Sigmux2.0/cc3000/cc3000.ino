@@ -138,12 +138,15 @@ void setup()
         ModeSet(SAFE_MODE);
         currentMode = SAFE_MODE;
         
-        
+#ifdef UNO        
 	Serial.begin(115200);
+#endif
     // Check that cc3000.begin() returns true
 	while (!cc3000.begin())
 	{
+#ifdef UNO
 		Serial.println(F("Unable to initialize the CC3000! Check your wiring?"));
+#endif
 		delay(500);
 	}
 	
@@ -154,7 +157,9 @@ void setup()
 	uint16_t firmware = checkFirmwareVersion();
 	if (firmware < 0x113)
 	{
+#ifdef UNO
 		Serial.println(F("Wrong firmware version!"));
+#endif
 		while(1);
 	}
   
@@ -174,9 +179,9 @@ void setup()
 	// by passing a 4th parameter to the connectToAP function below.  This should
 	// be a number of retries to make before giving up, for example 5 would retry
 	// 5 times and then fail if a connection couldn't be made.
-
+#ifdef UNO
 	Serial.print(F("Connecting to AP - "));
-        
+#endif
         //wlan_disconnect();
 	
     if (!cc3000.connectToAP(WLAN_SSID, WLAN_PASS, WLAN_SECURITY))
@@ -185,20 +190,24 @@ void setup()
 		return;
 	}
     digitalWrite(WLAN_LED, HIGH);
-   
+
+#ifdef UNO   
 	Serial.println(F("OK"));
-  
+#endif  
     // Check for DHCP and timeout after 20 seconds
     unsigned long dhcpTimeout = 20000;	// Try for 20 sec
 	unsigned long retry       = 0;
    
 	for(unsigned long t = millis(); ((millis() - t) <= dhcpTimeout);)
 	{
+#ifdef UNO
 		Serial.print(F("Querying DHCP - "));
-		
+#endif
 		if(cc3000.checkDHCP())
 		{
+#ifdef UNO
 			Serial.println(F("OK"));
+#endif
                         digitalWrite(DHCP_LED, HIGH);
                         dhcp = true;
 			break;
@@ -207,8 +216,9 @@ void setup()
 		{
 			if(retry >= 10)
 				Reboot("FAILED - Rebooting!!!", 2);
-			
+#ifdef UNO
 			Serial.println(retry+1);
+#endif
                         dhcp = false;
 		}
 		
@@ -220,27 +230,24 @@ void setup()
 	uint32_t bindIP = displayConnectionDetails();
 	uint32_t ip = cc3000.IP2U32(192, 168, 1, 192);	// EDT Panel IP
 	udpClient   = cc3000.connectUDP(ip, EDT_UDP_SERVICE, 0);
-	
+#ifdef UNO
 	if( udpClient.connected() )
           Serial.println(F("UDP Kurwa Connected"));
     else
 		Serial.println(F("UDP Kurwa is dead"));
+#endif
 }
 
 void loop()
 {
-//              Serial.println("entered main loop...");
-//		if(!udpClient.connected())
-//                {
-//			Reboot("Lost connection in main loop", 10);
-//                    Serial.println("Lost udp connection!");
-//                }
 		
 		if( udpClient.available() )
 		{
   
             // parse command
+#ifdef UNO
             Serial.println("attempting to read from udp socket");
+#endif
             byte command[2];
             udpClient.read(&command, 2);
 
@@ -254,15 +261,16 @@ void loop()
             g_newMode = mode;  // workaround because currentMode is volatile
             
             // for debugging
+#ifdef UNO
             Serial.print("command bytes received: "); 
             cc3000.printHexChar(command, 2);
-//            Serial.print(command[0], BIN); Serial.print(command[1], BIN); Serial.println();
-//            Serial.print("actuator: "); Serial.println(actuator);
-//            Serial.print("dig: "); Serial.println(dig);
-//            Serial.print("mode: "); Serial.println(currentMode);
-//            Serial.print("left: "); Serial.println(left);
-//            Serial.print("right: "); Serial.println(right);
-
+            Serial.print(command[0], BIN); Serial.print(command[1], BIN); Serial.println();
+            Serial.print("actuator: "); Serial.println(actuator);
+            Serial.print("dig: "); Serial.println(dig);
+            Serial.print("mode: "); Serial.println(currentMode);
+            Serial.print("left: "); Serial.println(left);
+            Serial.print("right: "); Serial.println(right);
+#endif
                String canCommand; // Start string off with "@0" 
                int leftMotorVal = left * LEFT_WHEEL_CONSTANT;
                int rightMotorVal = right * RIGHT_WHEEL_CONSTANT;
@@ -279,7 +287,6 @@ void loop()
                     {
                        canCommand += "_";
                     }
-                    //Serial.println(i);
                     canCommand += "@0";
                     canCommand += i;
                     canCommand += "!G 1 ";
@@ -313,17 +320,19 @@ void loop()
             // switch modes, check if we fail
             if(!ModeSet(g_newMode))
             {
+#ifdef UNO
                 // TODO PRINT OUT ERROR
                 Serial.print("Cannot change mode to "); Serial.println(currentMode);
+#endif
             } else
             {
                 currentMode = g_newMode;
             }
 
-            
+#ifdef UNO
             Serial.print("CAN command is: ");
-            Serial.println(canCommand); //Send TX here
-            
+            Serial.println(canCommand); //Send TX here 
+           
             // TODO if manual mode,
             // construct RoboteQ commands and transmit over USART
             if(currentMode == MANUAL_MODE)
@@ -334,21 +343,14 @@ void loop()
                 Serial.print("Not transmitting CAN command because we are in mode: ");
                 Serial.println(currentMode);
             }
-        
-//            if(packets % 4 == 0) 
-//            {
-//                digitalWrite(DHCP_LED, HIGH-digitalRead(DHCP_LED));
-//            }
-            
-            
+#endif            
             packets++;  // increment number of packets
             timeLastReceivedPacket = millis();
-        // else if there's no data from UDP socket
         }
-
-//		delay(100);
 }
 
+// timer interrupt callback (toggle DHCP_LED if there's activity on UDP socket)
+// otherwise, put DHCP_LED back the way it was
 ISR(TIMER1_COMPA_vect)
 {
     if(millis() - timeLastReceivedPacket < PACKET_TIME_LIMIT)
@@ -389,12 +391,14 @@ uint32_t displayConnectionDetails(void)
 		Reboot("Failed to query IP", 4);
 	else
 	{
+#ifdef UNO
 		Serial.print(F(  " IP  : ")); cc3000.printIPdotsRev(ipAddress);
 		Serial.print(F("\n Mask: ")); cc3000.printIPdotsRev(netmask);
 		Serial.print(F("\n GW  : ")); cc3000.printIPdotsRev(gateway);
 		Serial.print(F("\n DHCP: ")); cc3000.printIPdotsRev(dhcpserv);
 		Serial.print(F("\n DNS : ")); cc3000.printIPdotsRev(dnsserv);
 		Serial.println();
+#endif
 		return ipAddress;
 	}
 }
@@ -416,6 +420,7 @@ void Reboot(const char* errMsg, uint32_t errCode)
 
 void displayDriverMode(void)
 {
+#ifdef UNO
 #ifdef CC3000_TINY_DRIVER
 	Serial.println(F("CC3000 is configured in 'Tiny' mode"));
 #else
@@ -426,12 +431,13 @@ void displayDriverMode(void)
 	Serial.print(CC3000_TX_BUFFER_SIZE);
 	Serial.println(F(" bytes"));
 #endif
+#endif
 }
 
 void displayMACAddress(void)
 {
 	uint8_t macAddress[6];
-	
+#ifdef UNO
 	if(!cc3000.getMacAddress(macAddress))
 	{
 		Serial.println(F("Unable to retrieve MAC Address!"));
@@ -441,6 +447,7 @@ void displayMACAddress(void)
 		Serial.print(F("MAC Address : "));
 		cc3000.printHex((byte*)&macAddress, 6);
 	}
+#endif
 }
 
 void disableIdleTimout() {
@@ -451,7 +458,7 @@ void disableIdleTimout() {
     unsigned long aucARP        = 3600;
     unsigned long aucKeepalive  = 30;
     unsigned long aucInactivity = 0;
-    
+#ifdef UNO
     if(aucInactivity == 0)
         Serial.println(F("Setting netapp to not timeout"));
     else
@@ -460,14 +467,16 @@ void disableIdleTimout() {
         Serial.print(aucInactivity);
         Serial.println(F(" Seconds"));
     }
-    
+#endif
     long iRet = netapp_timeout_values(&aucDHCP, &aucARP, &aucKeepalive, &aucInactivity);
     
     if (iRet != 0)
     {
+#ifdef UNO
         Serial.print(F("Could not set netapp option, iRet = "));
         Serial.println(iRet);
         Serial.println(F(", aborting..."));
+#endif
         while(1);
     }
 }
@@ -533,6 +542,7 @@ void MuxSelect(uint8_t selection)
   }
 }
 
+// TODO fix constant delays here
 uint8_t ModeSet(uint8_t newMode)
 {
 
